@@ -1,6 +1,10 @@
 import os
+import queue
 import random
+import sys
+import threading
 import time
+import traceback
 from os import path
 import glob
 import logging
@@ -11,6 +15,7 @@ from functools import partial
 import tkinter as tk
 from tkinter import ttk
 from tkinter import filedialog
+from tkinter import messagebox as mbox
 
 
 class LogDisplay(ttk.LabelFrame):
@@ -41,6 +46,81 @@ class ConsoleLogHandler(logging.Handler):
         self.console.insert(tk.END, formatted_message)
         self.console.configure(state=tk.DISABLED)
         self.console.see(tk.END)
+
+
+class MultiProcessingHandler(logging.Handler):
+
+    def __init__(self, name, sub_handler=None):
+        super(MultiProcessingHandler, self).__init__()
+
+        if sub_handler is None:
+            sub_handler = logging.StreamHandler()
+        self.sub_handler = sub_handler
+
+        self.setLevel(self.sub_handler.level)
+        self.setFormatter(self.sub_handler.formatter)
+
+        self.queue = mp.Queue(-1)
+        self._is_closed = False
+        # The thread handles receiving records asynchronously.
+        self._receive_thread = threading.Thread(target=self._receive, name=name)
+        self._receive_thread.daemon = True
+        self._receive_thread.start()
+
+    def setFormatter(self, fmt):
+        super(MultiProcessingHandler, self).setFormatter(fmt)
+        self.sub_handler.setFormatter(fmt)
+
+    def _receive(self):
+        while not (self._is_closed and self.queue.empty()):
+            try:
+                record = self.queue.get(timeout=0.2)
+                self.sub_handler.emit(record)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except EOFError:
+                break
+            except queue.Empty:
+                pass  # This periodically checks if the logger is closed.
+            except:
+                traceback.print_exc(file=sys.stderr)
+
+        self.queue.close()
+        self.queue.join_thread()
+
+    def _send(self, s):
+        self.queue.put_nowait(s)
+
+    def _format_record(self, record):
+        # ensure that exc_info and args
+        # have been stringified. Removes any chance of
+        # unpickleable things inside and possibly reduces
+        # message size sent over the pipe.
+        if record.args:
+            record.msg = record.msg % record.args
+            record.args = None
+        if record.exc_info:
+            self.format(record)
+            record.exc_info = None
+
+        return record
+
+    def emit(self, record):
+        try:
+            s = self._format_record(record)
+            self._send(s)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except:
+            self.handleError(record)
+
+    def close(self):
+        if not self._is_closed:
+            self._is_closed = True
+            self._receive_thread.join(5.0)  # Waits for receive queue to empty.
+
+            self.sub_handler.close()
+            super(MultiProcessingHandler, self).close()
 
 
 class DirectoryChooser(ttk.Frame):
@@ -145,7 +225,11 @@ class BatchJobber(object):
 
         self.log_window = LogDisplay(master)
         self.logger = logging.getLogger()
-        self.log_handler = ConsoleLogHandler(self.log_window.console)
+        self.log_handler = MultiProcessingHandler(
+            "console-handler",
+            ConsoleLogHandler(self.log_window.console)
+        )
+
         self.logger.addHandler(self.log_handler)
 
         self.drawing_dir = DirectoryChooser(
@@ -177,7 +261,13 @@ class BatchJobber(object):
         master.grid_columnconfigure(0, weight=1)
         master.grid_columnconfigure(1, weight=1)
 
-        self.drawing_filter = DrawingFilter()
+        manager = mp.Manager()
+        self.job_running = False
+        self.failed_drawings = manager.Queue()
+        self.drawing_filter = DrawingFilter(
+            fail_queue=self.failed_drawings,
+            logger=self.logger
+        )
 
     def update_drawing_list(self, event):
         self.logger.debug(f"Changed drawing directory to {self.drawing_dir.get()}")
@@ -195,6 +285,8 @@ class BatchJobber(object):
         self.progress_bar.configure(mode='indeterminate')
         self.progress_bar.start(25)
 
+        self.job_running = True
+
         # TODO: get build options
         self.drawing_filter.set_build_options()
         self.drawing_filter.process(
@@ -207,12 +299,18 @@ class BatchJobber(object):
         pass
 
     def processing_done(self, event):
-        self.logger.info("All drawings processed")
         self.run_button.configure(state=tk.NORMAL)
         self.progress_bar.stop()
         self.progress_bar.grid_remove()
+        self.job_running = False
+        mbox.showinfo("AutoCAD Batch Jobber", "All done!")
 
     def on_quit(self):
+        if self.job_running:
+            self.logger.warning("Tried to quit with job running")
+            mbox.showwarning("AutoCAD Batch Jobber", "Job is still running!")
+            return
+        self.drawing_filter.stop()
         self.logger.info("Quitting...")
         self.master.destroy()
 
@@ -222,81 +320,53 @@ class DrawingFilter(object):
     Class to filter drawing files based on certain checks
     to prevent broken drawings being passed to the builder
     """
-    def __init__(self):
+    def __init__(self, fail_queue=None, logger=None):
+        self.logger = logger
+
         self.pool = mp.Pool()
-        manager = mp.Manager()
+        self.manager = mp.Manager()
 
-        self.pass_queue = manager.Queue()
-        self.fail_queue = manager.Queue()
-
-        self.pass_handler = None
-        self.fail_handler = None
+        self.fail_queue = fail_queue or self.manager.Queue()
+        self.build_queue = None
 
         self.num_builders = mp.cpu_count()
-        self.build_queue = None
         self.builders = []
 
         self.filter_callback = None
         self.build_callback = None
 
-    def start_handlers(self):
-        self.pass_handler.start()
-        self.fail_handler.start()
-
-    def reset_handlers(self):
-        self.stop()
-        self.pass_handler = mp.Process(
-            target=self.process_pass,
-            args=(self.pass_queue, self.build_queue)
-        )
-        self.fail_handler = mp.Process(
-            target=self.process_fail,
-            args=(self.fail_queue,)
-        )
-        self.start_handlers()
-
     def reset_builders(self):
-        self.build_queue = mp.JoinableQueue()
-        self.builders = [Builder(self.build_queue) for _ in range(self.num_builders)]
+        self.build_queue = self.manager.JoinableQueue()
+        self.builders = [
+            Builder(self.build_queue, self.logger)
+            for _ in range(self.num_builders)
+        ]
         for b in self.builders:
             b.start()
 
     def stop(self):
-        if self.pass_handler:
-            self.pass_handler.terminate()
-        if self.fail_handler:
-            self.fail_handler.terminate()
+        self.pool.terminate()
+        for b in self.builders:
+            b.terminate()
 
     def set_build_options(self):
         pass
 
-    def process_pass(self, queue, build_queue):
-        while True:
-            drawing = queue.get(block=True, timeout=None)
-            if drawing is None:
-                break
-            print(f"Processing {drawing}")
-            build_queue.put(drawing)
-
-    def process_fail(self, queue):
-        while True:
-            drawing = queue.get(block=True, timeout=None)
-            if drawing is None:
-                break
-            print(f"Warning - {drawing} failed check")
-
     def process(self, drawings, filter_callback=None, build_callback=None):
+        if self.logger:
+            self.logger.debug(f"Processing drawings...")
+
         self.filter_callback = filter_callback
         self.build_callback = build_callback
 
         self.reset_builders()
-        self.reset_handlers()
 
         self.pool.map_async(
             partial(
                 self.check_drawing,
-                pass_queue=self.pass_queue,
-                fail_queue=self.fail_queue
+                pass_queue=self.build_queue,
+                fail_queue=self.fail_queue,
+                logger=self.logger
             ),
             drawings,
             callback=self.filter_complete
@@ -304,7 +374,6 @@ class DrawingFilter(object):
 
     def filter_complete(self, val):
         self.fail_queue.put(None)
-        self.pass_queue.put(None)
         for _ in range(self.num_builders):
             self.build_queue.put(None)
 
@@ -312,25 +381,33 @@ class DrawingFilter(object):
             self.filter_callback()
 
         self.build_queue.join()
-        print(f"Build process done")
+        if self.logger:
+            self.logger.info("Build process done!")
+
         if self.build_callback:
             self.build_callback()
 
     @staticmethod
-    def check_drawing(drawing: str, pass_queue: mp.Queue, fail_queue: mp.Queue):
-        print(f"Checking {drawing}")
+    def check_drawing(drawing, pass_queue, fail_queue, logger=None):
+        if logger:
+            logger.debug(f"Checking {drawing}")
         time.sleep(random.random())
         if re.match(r".?pass", drawing):
+            if logger:
+                logger.info(f"{drawing} passed drawing check")
             pass_queue.put(drawing)
         else:
+            if logger:
+                logger.warning(f"{drawing} failed drawing check")
             fail_queue.put(drawing)
         return True
 
 
 class Builder(mp.Process):
-    def __init__(self, queue: mp.JoinableQueue):
+    def __init__(self, queue: mp.JoinableQueue, logger=None):
         super(Builder, self).__init__()
         self.queue = queue
+        self.logger = logger
 
     def run(self):
         while True:
@@ -338,7 +415,8 @@ class Builder(mp.Process):
             if drawing is None:
                 self.queue.task_done()
                 break
-            print(f"Building {drawing}...")
+            if self.logger:
+                self.logger.debug(f"Building {drawing}...")
             self.build_drawing(drawing)
             self.queue.task_done()
         return
@@ -348,11 +426,21 @@ class Builder(mp.Process):
             [path.join(path.abspath(path.curdir), "command.sh"), drawing],
             shell=True
         )
-        print(f"Built - {drawing}")
+        if self.logger:
+            self.logger.info(f"Built - {drawing}")
 
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
+    logger = logging.getLogger()
+
+    for i, orig_handler in enumerate(list(logger.handlers)):
+        handler = MultiProcessingHandler(
+            'mp-handler-{0}'.format(i), sub_handler=orig_handler)
+
+        logger.removeHandler(orig_handler)
+        logger.addHandler(handler)
+
     root = tk.Tk()
     win = BatchJobber(root)
     root.mainloop()
