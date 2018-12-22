@@ -1,8 +1,9 @@
 import logging
 import tkinter as tk
+import multiprocessing as mp
 
 from batchjobber.gui import BatchJobber
-from batchjobber.log_handlers import MultiProcessingHandler
+from batchjobber.log_handlers import MultiProcessingHandler, install_mp_handler
 
 
 def setup_logger(logger=None):
@@ -24,5 +25,10 @@ def main_gui():
 
 
 if __name__ == '__main__':
+    mp.freeze_support()
+
+    logging.basicConfig(level=logging.DEBUG)
+    install_mp_handler()
+
     setup_logger()
     main_gui()

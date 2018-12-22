@@ -5,8 +5,9 @@ import tkinter as tk
 from os import path
 from tkinter import ttk, filedialog, messagebox as mbox
 
-from batchjobber.log_handlers import MultiProcessingHandler, ConsoleLogHandler
-from batchjobber.pipeline import DrawingFilter
+from .log_handlers import MultiProcessingHandler, ConsoleLogHandler, install_mp_handler
+from .pipeline import DrawingFilter
+from .utility import autocad_console
 
 
 class LogDisplay(ttk.LabelFrame):
@@ -126,6 +127,7 @@ class BatchJobber(object):
 
         self.log_window = LogDisplay(master)
         self.logger = logging.getLogger()
+        install_mp_handler(self.logger)
         self.log_handler = MultiProcessingHandler(
             "console-handler",
             ConsoleLogHandler(self.log_window.console)
@@ -133,13 +135,15 @@ class BatchJobber(object):
 
         self.logger.addHandler(self.log_handler)
 
+        self.autocad_cmd = autocad_console()
+
         self.drawing_dir = DirectoryChooser(
             master,
             prompt_title="",
             label_text="Drawing Folder"
         )
         self.drawing_dir.bind("<<path_updated>>", self.update_drawing_list)
-        self.drawing_list = FileList(master, extension="txt")
+        self.drawing_list = FileList(master, extension="dwg")
         self.publish_option_var = tk.BooleanVar(value=True)
         self.publish_option = ttk.Checkbutton(
             master,
@@ -192,6 +196,7 @@ class BatchJobber(object):
         self.drawing_filter.set_build_options()
         self.drawing_filter.process(
             drawings,
+            self.drawing_dir.get(),
             filter_callback=lambda: self.master.event_generate("<<filter_finished>>"),
             build_callback=lambda: self.master.event_generate("<<build_finished>>")
         )
@@ -213,4 +218,5 @@ class BatchJobber(object):
             return
         self.drawing_filter.stop()
         self.logger.info("Quitting...")
+        self.log_handler.close()
         self.master.destroy()

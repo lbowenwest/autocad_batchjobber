@@ -7,6 +7,17 @@ import tkinter as tk
 import traceback
 
 
+def install_mp_handler(logger=None):
+    if not logger:
+        logger = logging.getLogger()
+    for i, orig_handler in enumerate(list(logger.handlers)):
+        handler = MultiProcessingHandler(
+            f"mp-handler-{i}", sub_handler=orig_handler
+        )
+        logger.removeHandler(orig_handler)
+        logger.addHandler(handler)
+
+
 class ConsoleLogHandler(logging.Handler):
     """
     Logging handler to redirect logs to console window
@@ -95,7 +106,7 @@ class MultiProcessingHandler(logging.Handler):
     def close(self):
         if not self._is_closed:
             self._is_closed = True
-            self._receive_thread.join(5.0)  # Waits for receive queue to empty.
+            self._receive_thread.join(2.0)  # Waits for receive queue to empty.
 
             self.sub_handler.close()
             super(MultiProcessingHandler, self).close()
