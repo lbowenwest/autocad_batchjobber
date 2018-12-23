@@ -9,7 +9,7 @@ from os import path
 from .utility import autocad_console
 
 
-class DrawingFilter(object):
+class DrawingProcessor(object):
     """
     Class to filter drawing files based on certain checks
     to prevent broken drawings being passed to the builder
@@ -18,10 +18,6 @@ class DrawingFilter(object):
     def __init__(self, fail_queue=None, log_queue=None):
         self.logger = logging.getLogger()
         self.log_queue = log_queue
-
-        # qh = logging.handlers.QueueHandler(log_queue)
-        # self.logger.addHandler(qh)
-        # install_mp_handler(self.logger)
 
         self.pool = mp.Pool()
         self.manager = mp.Manager()
@@ -95,7 +91,7 @@ class DrawingFilter(object):
         logger.setLevel(logging.DEBUG)
         logger.addHandler(qh)
         logger.debug(f"Checking {drawing}")
-        script_dir = path.abspath(path.join(path.abspath(path.curdir), "..", "scripts"))
+        script_dir = path.join(path.abspath(path.curdir), "scripts")
         cmd = [
             autocad_console(log=False),
             "/i", path.join(path.abspath(drawing_dir), drawing),
@@ -122,7 +118,7 @@ class Builder(mp.Process):
         self.log_queue = log_queue
         self.drawing_dir = path.abspath(drawing_dir)
         self.autocad_cmd = autocad_console(log=False)
-        self.script_dir = path.abspath(path.join(path.abspath(path.curdir), "..", "scripts"))
+        self.script_dir = path.join(path.abspath(path.curdir), "scripts")
         if publish:
             self.script = path.join(self.script_dir, "zipship_publish.scr")
         else:
@@ -145,6 +141,9 @@ class Builder(mp.Process):
         return
 
     def build_drawing(self, drawing):
-        cmd = [self.autocad_cmd, "/i", path.join(self.drawing_dir, drawing), "/s", self.script]
+        cmd = [
+            self.autocad_cmd,
+            "/i", path.join(self.drawing_dir, drawing),
+            "/s", path.join(self.script_dir, self.script)]
         out_code = sp.check_call(cmd, shell=True, stdout=sp.DEVNULL, stderr=sp.DEVNULL)
         return out_code

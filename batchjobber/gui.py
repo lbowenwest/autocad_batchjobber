@@ -7,7 +7,7 @@ from os import path
 from tkinter import ttk, filedialog, messagebox as mbox
 
 from .log_handlers import ConsoleLogHandler, logger_thread
-from .pipeline import DrawingFilter
+from .pipeline import DrawingProcessor
 from .utility import autocad_console
 
 
@@ -144,7 +144,7 @@ class BatchJobber(object):
         self.log_thread.start()
 
         self.failed_drawings = manager.Queue()
-        self.drawing_filter = DrawingFilter(
+        self.drawing_filter = DrawingProcessor(
             fail_queue=self.failed_drawings,
             log_queue=self.log_queue
         )
@@ -181,7 +181,6 @@ class BatchJobber(object):
         master.grid_rowconfigure(4, weight=1)
         master.grid_columnconfigure(0, weight=1)
         master.grid_columnconfigure(1, weight=1)
-
 
 
     def update_drawing_list(self, event):
