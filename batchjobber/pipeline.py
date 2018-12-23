@@ -3,11 +3,12 @@ import random
 import re
 import subprocess as sp
 import time
+import logging
+import logging.handlers
 from functools import partial
 from os import path
 
 from .utility import autocad_console
-from .log_handlers import install_mp_handler
 
 
 class DrawingFilter(object):
@@ -16,10 +17,14 @@ class DrawingFilter(object):
     to prevent broken drawings being passed to the builder
     """
 
-    def __init__(self, fail_queue=None, logger=None):
-        self.logger = logger
+    def __init__(self, fail_queue=None, log_queue=None):
+        self.logger = logging.getLogger()
+        self.log_queue = log_queue
 
-        install_mp_handler(self.logger)
+        # qh = logging.handlers.QueueHandler(log_queue)
+        # self.logger.addHandler(qh)
+        # install_mp_handler(self.logger)
+
         self.pool = mp.Pool()
         self.manager = mp.Manager()
 
@@ -36,7 +41,7 @@ class DrawingFilter(object):
     def reset_builders(self, drawing_dir):
         self.build_queue = self.manager.JoinableQueue()
         self.builders = [
-            Builder(self.build_queue, drawing_dir, logger=self.logger)
+            Builder(self.build_queue, drawing_dir, log_queue=self.log_queue)
             for _ in range(self.num_builders)
         ]
         for b in self.builders:
@@ -51,8 +56,7 @@ class DrawingFilter(object):
         pass
 
     def process(self, drawings, drawing_dir, filter_callback=None, build_callback=None):
-        if self.logger:
-            self.logger.debug(f"Processing drawings...")
+        self.logger.debug(f"Processing drawings...")
 
         self.drawing_dir = drawing_dir
         self.filter_callback = filter_callback
@@ -66,7 +70,7 @@ class DrawingFilter(object):
                 drawing_dir=drawing_dir,
                 pass_queue=self.build_queue,
                 fail_queue=self.fail_queue,
-                logger=self.logger
+                log_queue=self.log_queue
             ),
             drawings,
             callback=self.filter_complete
@@ -81,65 +85,68 @@ class DrawingFilter(object):
             self.filter_callback()
 
         self.build_queue.join()
-        if self.logger:
-            self.logger.info("Build process done!")
+        # self.logger.info("Build process done!")
 
         if self.build_callback:
             self.build_callback()
 
     @staticmethod
-    def check_drawing(drawing, drawing_dir, pass_queue, fail_queue, logger=None):
-        if logger:
-            logger.debug(f"Checking {drawing}")
-        # time.sleep(random.random())
+    def check_drawing(drawing, drawing_dir, pass_queue, fail_queue, log_queue):
+        qh = logging.handlers.QueueHandler(log_queue)
+        logger = logging.getLogger('filter')
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(qh)
+        logger.debug(f"Checking {drawing}")
         script_dir = path.abspath(path.join(path.abspath(path.curdir), "..", "scripts"))
         cmd = [
-            autocad_console(),
+            autocad_console(log=False),
             "/i", path.join(path.abspath(drawing_dir), drawing),
             "/s", path.join(script_dir, "test_xrefs.scr")
         ]
-        out = sp.check_output(cmd, shell=Trues, stderr=sp.DEVNULL)
+        out = sp.check_output(cmd, shell=True, stderr=sp.DEVNULL)
         result = out.replace(b'\x00', b'').replace(b'\x08', b'').decode('ascii')
         match = re.match(r".+Total Xref\(s\): (\d+)", re.sub(r"[\r\n]", "", result))
         if not match:
             return False
         if int(match.group(1)) == 0:
-            if logger:
-                logger.info(f"{drawing} passed drawing check")
+            logger.info(f"{drawing} passed drawing check")
             pass_queue.put(drawing)
         else:
-            if logger:
-                logger.warning(f"{drawing} failed drawing check")
+            logger.warning(f"{drawing} failed drawing check")
             fail_queue.put(drawing)
         return True
 
 
 class Builder(mp.Process):
-    def __init__(self, queue: mp.JoinableQueue, drawing_dir, logger=None):
+    def __init__(self, queue: mp.JoinableQueue, drawing_dir, publish=True, log_queue=None):
         super(Builder, self).__init__()
         self.queue = queue
-        self.logger = logger
+        self.log_queue = log_queue
         self.drawing_dir = path.abspath(drawing_dir)
         self.autocad_cmd = autocad_console(log=False)
         self.script_dir = path.abspath(path.join(path.abspath(path.curdir), "..", "scripts"))
-        self.script = path.join(self.script_dir, "zipship.scr")
+        if publish:
+            self.script = path.join(self.script_dir, "zipship_publish.scr")
+        else:
+            self.script = path.join(self.script_dir, "zipship.scr")
 
     def run(self):
+        logger = logging.getLogger('builder')
+        logger.setLevel(logging.DEBUG)
+        qh = logging.handlers.QueueHandler(self.log_queue)
+        logger.addHandler(qh)
         while True:
             drawing = self.queue.get()
             if drawing is None:
                 self.queue.task_done()
                 break
-            if self.logger:
-                self.logger.debug(f"Building {drawing}...")
+            logger.debug(f"Building {drawing}...")
             self.build_drawing(drawing)
+            logger.info(f"Built - {drawing}")
             self.queue.task_done()
         return
 
     def build_drawing(self, drawing):
         cmd = [self.autocad_cmd, "/i", path.join(self.drawing_dir, drawing), "/s", self.script]
-        self.logger.debug(f"Command: {' '.join(cmd)}")
-        # print(f"Command: {' '.join(cmd)}")
-        sp.check_call(cmd, shell=True, stdout=sp.DEVNULL, stderr=sp.DEVNULL)
-        if self.logger:
-            self.logger.info(f"Built - {drawing}")
+        out_code = sp.check_call(cmd, shell=True, stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+        return out_code

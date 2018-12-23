@@ -1,11 +1,12 @@
 import glob
 import logging
 import multiprocessing as mp
+import threading
 import tkinter as tk
 from os import path
 from tkinter import ttk, filedialog, messagebox as mbox
 
-from .log_handlers import MultiProcessingHandler, ConsoleLogHandler, install_mp_handler
+from .log_handlers import ConsoleLogHandler, logger_thread
 from .pipeline import DrawingFilter
 from .utility import autocad_console
 
@@ -127,10 +128,25 @@ class BatchJobber(object):
 
         self.log_window = LogDisplay(master)
         self.logger = logging.getLogger()
-        install_mp_handler(self.logger)
-        self.log_handler = MultiProcessingHandler(
-            "console-handler",
-            ConsoleLogHandler(self.log_window.console)
+        # install_mp_handler(self.logger)
+        # self.log_handler = MultiProcessingHandler(
+        #     "console-handler",
+        #     ConsoleLogHandler(self.log_window.console)
+        # )
+
+        self.log_handler = ConsoleLogHandler(self.log_window.console)
+
+        self.job_running = False
+
+        manager = mp.Manager()
+        self.log_queue = manager.Queue(-1)
+        self.log_thread = threading.Thread(target=logger_thread, args=(self.log_queue,))
+        self.log_thread.start()
+
+        self.failed_drawings = manager.Queue()
+        self.drawing_filter = DrawingFilter(
+            fail_queue=self.failed_drawings,
+            log_queue=self.log_queue
         )
 
         self.logger.addHandler(self.log_handler)
@@ -166,13 +182,7 @@ class BatchJobber(object):
         master.grid_columnconfigure(0, weight=1)
         master.grid_columnconfigure(1, weight=1)
 
-        manager = mp.Manager()
-        self.job_running = False
-        self.failed_drawings = manager.Queue()
-        self.drawing_filter = DrawingFilter(
-            fail_queue=self.failed_drawings,
-            logger=self.logger
-        )
+
 
     def update_drawing_list(self, event):
         self.logger.debug(f"Changed drawing directory to {self.drawing_dir.get()}")
@@ -218,5 +228,7 @@ class BatchJobber(object):
             return
         self.drawing_filter.stop()
         self.logger.info("Quitting...")
-        self.log_handler.close()
+        # self.log_handler.close()
+        self.log_queue.put(None)
+        self.log_thread.join()
         self.master.destroy()
