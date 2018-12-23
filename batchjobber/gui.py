@@ -202,6 +202,8 @@ class BatchJobber(object):
         self.job_running = True
 
         # TODO: get build options
+        # TODO: make sure no drawings are currently open
+
         self.drawing_filter.set_build_options()
         self.drawing_filter.process(
             drawings,
@@ -211,6 +213,7 @@ class BatchJobber(object):
         )
 
     def filtering_done(self, event):
+        # TODO: use failed queue to warn user of drawingsthat weren't processed
         pass
 
     def processing_done(self, event):
