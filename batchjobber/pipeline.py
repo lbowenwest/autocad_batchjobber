@@ -1,8 +1,6 @@
 import multiprocessing as mp
-import random
 import re
 import subprocess as sp
-import time
 import logging
 import logging.handlers
 from functools import partial
@@ -56,7 +54,7 @@ class DrawingFilter(object):
         pass
 
     def process(self, drawings, drawing_dir, filter_callback=None, build_callback=None):
-        self.logger.debug(f"Processing drawings...")
+        self.logger.debug(f"Starting checks...")
 
         self.drawing_dir = drawing_dir
         self.filter_callback = filter_callback
@@ -85,7 +83,7 @@ class DrawingFilter(object):
             self.filter_callback()
 
         self.build_queue.join()
-        # self.logger.info("Build process done!")
+        self.logger.info("Build process done!")
 
         if self.build_callback:
             self.build_callback()
