@@ -125,6 +125,7 @@ class BatchJobber(object):
         master.protocol("WM_DELETE_WINDOW", self.on_quit)
         master.bind("<<filter_finished>>", self.filtering_done)
         master.bind("<<build_finished>>", self.processing_done)
+        master.bind("<<build_error>>", self.processing_error)
 
         self.log_window = LogDisplay(master)
         self.logger = logging.getLogger()
@@ -182,7 +183,6 @@ class BatchJobber(object):
         master.grid_columnconfigure(0, weight=1)
         master.grid_columnconfigure(1, weight=1)
 
-
     def update_drawing_list(self, event):
         self.logger.debug(f"Changed drawing directory to {self.drawing_dir.get()}")
         self.drawing_list.update_list(self.drawing_dir.get())
@@ -209,7 +209,8 @@ class BatchJobber(object):
             drawings,
             self.drawing_dir.get(),
             filter_callback=lambda: self.master.event_generate("<<filter_finished>>"),
-            build_callback=lambda: self.master.event_generate("<<build_finished>>")
+            build_callback=lambda: self.master.event_generate("<<build_finished>>"),
+            error_callback=lambda: self.master.event_generate("<<build_error>>")
         )
 
     def filtering_done(self, event):
@@ -223,6 +224,13 @@ class BatchJobber(object):
         self.job_running = False
         mbox.showinfo(self.title, "All done!")
 
+    def processing_error(self, event):
+        self.run_button.configure(state=tk.NORMAL)
+        self.progress_bar.stop()
+        self.progress_bar.grid_remove()
+        self.job_running = False
+        mbox.showerror(self.title + " Error", "No drawings were processes")
+
     def on_quit(self):
         if self.job_running:
             self.logger.warning("Tried to quit with job running")
@@ -230,7 +238,6 @@ class BatchJobber(object):
             return
         self.drawing_filter.stop()
         self.logger.info("Quitting...")
-        # self.log_handler.close()
         self.log_queue.put(None)
         self.log_thread.join()
         self.master.destroy()

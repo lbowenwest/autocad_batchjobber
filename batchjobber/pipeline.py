@@ -49,14 +49,25 @@ class DrawingProcessor(object):
     def set_build_options(self):
         pass
 
-    def process(self, drawings, drawing_dir, filter_callback=None, build_callback=None):
+    def process(self, drawings, drawing_dir, filter_callback=None, build_callback=None, error_callback=None):
         self.logger.debug(f"Starting checks...")
 
         self.drawing_dir = drawing_dir
         self.filter_callback = filter_callback
         self.build_callback = build_callback
 
+        for idx, drawing in enumerate(drawings):
+            if self.check_open(drawing):
+                del drawings[idx]
+                self.fail_queue.put(drawing)
+                self.logger.error(f"{drawing} is currently open and will not be processed, please close it")
+
         self.reset_builders(drawing_dir)
+
+        if not drawings:
+            filter_callback()
+            error_callback()
+            return
 
         self.pool.map_async(
             partial(
@@ -83,6 +94,14 @@ class DrawingProcessor(object):
 
         if self.build_callback:
             self.build_callback()
+
+    def check_open(self, drawing):
+        name = path.splitext(drawing)[0]
+        files = glob.glob(path.join(path.abspath(self.drawing_dir), name + ".dwl"))
+        if files:
+            return True
+        else:
+            return False
 
     @staticmethod
     def check_drawing(drawing, drawing_dir, pass_queue, fail_queue, log_queue):
