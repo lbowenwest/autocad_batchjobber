@@ -43,9 +43,9 @@ class DrawingProcessor(object):
             b.start()
 
     def stop(self):
-        self.pool.terminate()
         for b in self.builders:
             b.terminate()
+        self.pool.terminate()
 
     def set_build_options(self):
         pass
