@@ -1,5 +1,6 @@
 import glob
 import logging
+import logging.handlers
 import multiprocessing as mp
 import threading
 import tkinter as tk
@@ -127,20 +128,18 @@ class BatchJobber(object):
         master.bind("<<build_finished>>", self.processing_done)
         master.bind("<<build_error>>", self.processing_error)
 
-        self.log_window = LogDisplay(master)
-        self.logger = logging.getLogger()
-        # install_mp_handler(self.logger)
-        # self.log_handler = MultiProcessingHandler(
-        #     "console-handler",
-        #     ConsoleLogHandler(self.log_window.console)
-        # )
-
-        self.log_handler = ConsoleLogHandler(self.log_window.console)
-
+        manager = mp.Manager()
         self.job_running = False
 
-        manager = mp.Manager()
+        self.log_window = LogDisplay(master)
+        self.logger = logging.getLogger()
+
+        self.console_log_handler = ConsoleLogHandler(self.log_window.console)
+        self.console_log_handler.setLevel(logging.INFO)
+        self.logger.addHandler(self.console_log_handler)
+
         self.log_queue = manager.Queue(-1)
+
         self.log_thread = threading.Thread(target=logger_thread, args=(self.log_queue,))
         self.log_thread.start()
 
@@ -149,8 +148,6 @@ class BatchJobber(object):
             fail_queue=self.failed_drawings,
             log_queue=self.log_queue
         )
-
-        self.logger.addHandler(self.log_handler)
 
         self.autocad_cmd = autocad_console()
 
@@ -214,8 +211,11 @@ class BatchJobber(object):
         )
 
     def filtering_done(self, event):
-        # TODO: use failed queue to warn user of drawingsthat weren't processed
-        pass
+        failed = []
+        for dwg in iter(self.failed_drawings.get, None):
+            failed.append(dwg)
+        failed_string = '\n'.join(failed)
+        mbox.showwarning(self.title, f"These drawings failed the test:\n{failed_string}")
 
     def processing_done(self, event):
         self.run_button.configure(state=tk.NORMAL)
@@ -229,7 +229,7 @@ class BatchJobber(object):
         self.progress_bar.stop()
         self.progress_bar.grid_remove()
         self.job_running = False
-        mbox.showerror(self.title + " Error", "No drawings were processes")
+        mbox.showerror(self.title + " Error", "No drawings were processed")
 
     def on_quit(self):
         if self.job_running:
