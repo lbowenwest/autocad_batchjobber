@@ -215,7 +215,8 @@ class BatchJobber(object):
         for dwg in iter(self.failed_drawings.get, None):
             failed.append(dwg)
         failed_string = '\n'.join(failed)
-        mbox.showwarning(self.title, f"These drawings failed the test:\n{failed_string}")
+        if failed:
+            mbox.showwarning(self.title, f"These drawings failed the test:\n{failed_string}")
 
     def processing_done(self, event):
         self.run_button.configure(state=tk.NORMAL)
