@@ -93,6 +93,12 @@ def generate_worker_config(q: mp.Queue, level: str = 'DEBUG') -> Dict:
 
 
 def generate_listener_config(q: mp.Queue) -> Dict:
+    """
+    Generates logging config for the dispatcher process
+
+    :param q: console window queue
+    :return: config dict
+    """
     log_config = {
         'version': 1,
         'formatters': {
